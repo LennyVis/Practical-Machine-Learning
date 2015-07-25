@@ -1,0 +1,266 @@
+---
+title: "Human Activity Recognition"
+output: html_document
+---
+
+Summary: The goal of this paper is to develop a prediction model which is based on the Human Activity Recognition data set. The dataset provides information regarding how well barbell lifts were performed by 6 healthy subjects. The participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). The data is collected by having accelerometers mounted on the belt, forearm, arm, and dumbell. The purspose of the study is to investigate how well the activity was performed by the wearer. More information regarding the collection of the data could be found at http://groupware.les.inf.puc-rio.br/work.jsf?p1=10335 under the section Weight Lifting Exerceis Dataset. 
+
+
+Analysys
+
+1. Pre-processing of the data
+
+The first step is to load the data into a training, testing and validation sets. The model will be developed be developed by using the training and the testing set. The validation set will be used for one time testing after which will determine the out of sample error. First we are going to split the data into to part(80% and 20%). The smaller part will be our Validation set. The bigger part will be consequently split into two sections (70% and 30%). The bigger portion is the Train set ad the smaller portion is the Test set. The prediciton model which shows the best results on the Validation set data will be selected as the best model.
+
+```{r, cache=TRUE, echo=FALSE}
+library(caret)
+library(rattle)
+library(doParallel)
+registerDoParallel(cores=4)
+
+setwd("C:/Users/birk/Documents/Projects/Specialization/Practical Machine Learning/Project")
+
+pmlTraining <-data.frame(read.csv("pml-training.csv"))
+pmlTesting <-data.frame(read.csv("pml-testing.csv"))
+
+set.seed(128)
+
+inTrainTest <- createDataPartition(y=pmlTraining$classe, p=0.8, list=FALSE)
+formulaTrainTest <- pmlTraining[inTrainTest,]
+Validation <- pmlTraining[-inTrainTest,]
+
+inTrain <- createDataPartition(y=formulaTrainTest$classe, p=0.7, list=FALSE)
+formulaTraining <- formulaTrainTest[inTrain,]
+formulaTesting <- formulaTrainTest[-inTrain,]
+```
+
+The columns in the sets are:
+
+```{r, warniong=FALSE, echo=FALSE}
+colnames(pmlTraining)
+```
+In the training dataset, we can see that there are few categorical variables. For the purspose of analysing the dataset, we are going to convert them to dummy variables.
+
+```{r, cache=TRUE}
+dummies = dummyVars(classe~., data=formulaTraining)
+
+formulaTrainingDummies = predict(dummies, newdata=formulaTraining)
+formulaTrainingDummies = data.frame(formulaTrainingDummies)
+
+formulaTestingDummies = predict(dummies, newdata=formulaTesting)
+formulaTestingDummies = data.frame(formulaTestingDummies)
+```
+The next step is to remove the Near Zero-Variance Predictors which are predictors with only one single unique value.
+```{r, cache = TRUE}
+nzv <- nearZeroVar(formulaTrainingDummies)
+formulaTrainingDummiesNZV = formulaTrainingDummies[,-nzv]
+formulaTestingDummiesNZV = formulaTestingDummies[,-nzv]
+```
+
+In our training dataset, we had 6,988 variables after creating the dummy variables. After removing the near-zero variance predictors, the number of variables decreased to 114 which would help us simplify the model and make it faster.
+
+The next step in our preprocessing is to identify the correlations among variables and to remove the ones which are too strongly correlated. There are 44 variables in our dataset which are highly correlated
+```{r, cache=TRUE}
+descrCor = cor(formulaTrainingDummiesNZV, use="complete.obs")
+highlyCorDescr = findCorrelation(descrCor, cutoff = .75)
+highlyCorDescr
+formulaTrainingDummiesNZV = formulaTrainingDummiesNZV[,-highlyCorDescr]
+formulaTestingDummiesNZV = formulaTestingDummiesNZV[,-highlyCorDescr]
+Training =formulaTrainingDummiesNZV
+Testing = formulaTestingDummiesNZV
+Training$classe=as.numeric(formulaTraining$classe)
+Testing$classe=as.numeric(formulaTesting$classe)
+
+col_remove=names(which(colSums(is.na(Training))>5,000))
+Training=Training[, !(names(Training) %in% col_remove)]
+
+Testing = Testing[, !(names(Testing) %in% col_remove)]
+```
+
+After removing them we end up with a dataset with 70 variables all of which are loosley correlated. 
+
+2. Linear regression
+
+The data in our training and testing dataset is being pre processed and the next step is to run few models on the data and check which one predicts best the testing dataset
+
+```{r, cache = TRUE, echo=FALSE}
+cvCtrl <- trainControl(method = "cv", number=5, allowParallel = TRUE)
+trainObjLM = train(classe~., data=Training, method="lm", trControl=cvCtrl, verbose=FALSE)
+predTestingGLM <- round(predict(trainObjLM, newdata=Testing))
+table(predTestingGLM, Testing$classe)
+confusionMatrix(predTestingGLM, Testing$classe)
+```
+The results is that the model has 0.9998 accuracy and Kappa equal to 0.9997 which means that the midel is very close to perfectly predicting the model.
+
+We will try a Linear regression with stepwise selection; this model has a tuning parameter nvmax(Maximum Number of Predictors)
+
+```{r, cache=TRUE, echo=FALSE}
+cvCtrl <- trainControl(method = "cv", number=3, allowParallel = TRUE)
+trainObjleapForward = train(classe~., data=Training, method="leapForward", trControl=cvCtrl, verbose=FALSE)
+predTestingleapForward <- round(predict(trainObjleapForward, newdata=Testing))
+table(predTestingleapForward, Testing$classe)
+confusionMatrix(predTestingleapForward, Testing$classe)
+```
+
+We can also explore the parameter nvmax and see how changing the parameter affects the model.
+```{r, cache=TRUE}
+gmbGrid = expand.grid(nvmax=c(1, 2, 3, 4, 5, 6, 7, 8))
+cvCtrl <- trainControl(method = "cv", number=3, allowParallel = TRUE)
+trainObjleapForwardTuned = train(classe~., data=Training, method="leapForward", trControl=cvCtrl, tuneGrid = gmbGrid, verbose=FALSE)
+predTestingleapForwardTuned <- round(predict(trainObjleapForwardTuned, newdata=Testing))
+table(predTestingleapForwardTuned, Testing$classe)
+confusionMatrix(predTestingleapForwardTuned, Testing$classe)
+```
+
+
+3. Recursive partitioning with k-fold cross-validation
+
+The number of observations in the training set is `nrow(formulaTesting)` and we will use a repeated k-fold cross-validation where k is equal to 5.
+
+
+```{r, cache=TRUE}
+cvCtrl <- trainControl(method = "cv", number=5, allowParallel = TRUE)
+trainObjectRPARTcv = train(classe ~ ., data = Training, method = "rpart", trControl = cvCtrl)
+finalModelRPARTcv = trainObjectRPARTcv$finalModel
+```
+
+Plotting the decision tree
+```{r fig.width=7, fig.height=6}
+fancyRpartPlot(finalModelRPARTcv)
+```
+We have 66% accuracy in this model
+```{r, cache=TRUE}
+predTestingRPART = round(predict(trainObjectRPARTcv, newdata = Testing))
+table(predTestingRPART, Testing$classe)
+confusionMatrix(predTestingRPART, Testing$classe)
+
+```
+
+Visualizing the moodel, we can see from the model plot that the only variable used in the tree branches is X. The decision which is the final model is based on the RMSE value. The model with the highest value is selected. In our current model where cp = 0.04 we have an accuracy of 66%. We will try to improve the accuracy by changing the tunning parameter which in this case is cp. We will try to fine tune the cp paramter by giving it an array of values between 0.03 and 0.065
+
+```{r, cache = TRUE}
+gmbGrid = expand.grid(cp=c(0.03, 0.035, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65))
+trainObjectRPARTTuned = train(classe ~ ., data = Training, method = "rpart", trControl = cvCtrl, tuneGrid = gmbGrid)
+finalModelRPARTTuned = trainObjectRPARTTuned$finalModel
+
+predTestingRPARTTuned = round(predict(trainObjectRPARTTuned, newdata = Testing))
+table(predTestingRPARTTuned, Testing$classe)
+confusionMatrix(predTestingRPARTTuned, Testing$classe)
+```
+
+By plotting the model, we can see that the decision tree has more branches and an additional depth level compared to the previous model where c=0.45. The accurcay is up to 0.9994 and the kappa value is 0.9992.
+
+```{r fig.width=7, fig.height=6}
+fancyRpartPlot(finalModelRPARTTuned)
+```
+
+4. GBM method with k-fold cross-validation
+
+Similar to th previous analysis, we are going to use k-fold cross validation where k=5. 
+
+```{r, cache=TRUE}
+cvCtrl <- trainControl(method = "cv", number=5, allowParallel = TRUE)
+trainObjectGBM = train(classe ~ ., data = Training, method = "gbm", trControl = cvCtrl)
+finalModelGBM = trainObjectGBM$finalModel
+
+predTestingGBM = round(predict(trainObjectGBM, newdata = Testing))
+table(predTestingGBM, Testing$classe)
+confusionMatrix(predTestingGBM, Testing$classe)
+```
+
+The Confusion Matrix shows that the model is having an accuracy of 0.9994 and kappa equal to 0.9992.
+
+Plot the tree
+```{r fig.width=7, fig.height=6}
+fancyRpartPlot(finalModelGBM)
+```
+
+5. Bagging method
+
+Teh last model to try on the dataset is the bag model. For our model we are going to use the ctreeBag Control, Prediction and Aggregate functions. The number of bootstrap samples is set to 3 because the of the small numbers of observations we have in the training dataset.
+
+```{r, cache=TRUE}
+cvCtrl <- trainControl(allowParallel = TRUE)
+trainObjBAG = bag(Training[,c(0:53)], Training$classe, B=5,
+                                        bagControl = bagControl(fit = ctreeBag$fit,
+                                        predict = ctreeBag$pred,
+                                        aggregate = ctreeBag$aggregate,
+                                        allowParallel = TRUE))
+
+predTestingBAG = round(predict(trainObjBAG, newdata = Testing))
+table(predTestingBAG, Testing$classe)
+confusionMatrix(predTestingBAG, Testing$classe)
+
+trainObjBAG$fits[[1]]$fit
+```
+
+From the resulting model, we can see that the model predicts the result by using only the X variable. Looking at the plot we can see the outcome classe is bagged by the X variable. There are five clearly described intervals of X which determine what the value of classe would be.
+
+
+```{r, cache=TRUE}
+plot(Testing$X,Testing$classe,col='lightgrey',pch=19)
+points(Testing$X,predict(trainObjBAG$fits[[1]]$fit,Testing),pch=24,col="red")
+points(Testing$X,predict(trainObjBAG,Testing),pch=20,col="blue")
+```
+
+
+
+6. Out of sample error
+
+In order to determine our out of sample error, we are going to look at the validation dataset that we created in the beginning of the analysis. The validation dataset was not used to build and/or improve any of our models and as such will be a good candidate to determine the out of sample error of our models.
+
+First we need to pre process the validation dataset with the same methods we used for the training and testing datasets. 
+
+```{r, cache=TRUE}
+validationDummies = predict(dummies, newdata=Validation)
+validationDummies = data.frame(validationDummies)
+
+validationDummiesNZV = validationDummies[,-nzv]
+
+validationDummiesNZV = validationDummiesNZV[,-highlyCorDescr]
+
+validationDummiesNZV$classe = as.numeric(Validation$classe)
+Validation = validationDummiesNZV
+
+Validation = Validation[, !(names(Validation) %in% col_remove)]
+```
+
+First we are going to use the Linear regression model. The results are that the model predicts the data with Accuracy of 100% and kappa equal to 1. The case may be that the model is overfitting.
+
+```{r, cache=TRUE}
+predValidationleapForward <- round(predict(trainObjleapForward, newdata=Validation))
+table(predValidationleapForward, Validation$classe)
+confusionMatrix(predValidationleapForward, Validation$classe)
+```
+
+The second model used for prediction will be the Recursive partitioning with k-fold cross-validation where k=5. First we can try with the initial model before the tuning. The accuracy of the model is 0.667 with kappa 0.5366.
+
+```{r, cache=TRUE}
+predValidationleapRPART <- round(predict(trainObjectRPARTTuned, newdata=Validation))
+table(predValidationleapRPART, Validation$classe)
+confusionMatrix(predValidationleapRPART, Validation$classe)
+```
+
+Now we will try to evaluate the tuned model on the Validation dataset. The acucracy is 0.9995 with kappa 0.9994 which means the that tuned model is much better in predicting the dataset. With the tuned model we are having an out of sample error equal to 
+```{r, cache=TRUE}
+predValidationleapRPART <- round(predict(trainObjectRPARTTuned, newdata=Validation))
+table(predValidationleapRPART, Validation$classe)
+confusionMatrix(predValidationleapRPART, Validation$classe)
+```
+
+With the gbm method we have an accuracy of 0.9997 and kappa of 0.9997 which means that the out of sample error is 
+```{r, cache=TRUE}
+predValidationGBM <- round(predict(trainObjectGBM, newdata=Validation))
+table(predValidationGBM, Validation$classe)
+confusionMatrix(predValidationGBM, Validation$classe)
+```
+
+the final model to evaluate is the BAG model. The bag model seems to be 100% accurate predictor of the model with kappa equal to 1 which means that the out of sample error should be 0.
+
+```{r, cache=TRUE}
+predValidationBAG <- round(predict(trainObjBAG, newdata=Validation))
+table(predValidationBAG, Validation$classe)
+confusionMatrix(predValidationBAG, Validation$classe)
+```
+
+
